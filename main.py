@@ -1,6 +1,5 @@
 # ============================================================
-#   Face Recognition Attendance System
-#   OPTION 1 — No dlib | Works on Python 3.14+
+#   Face Recognition Attendance System (Standalone App)
 #   Uses: OpenCV LBPH recognizer + Haarcascade detector
 # ============================================================
 #   Install (one command):
@@ -19,6 +18,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox, simpledialog
 from PIL import Image, ImageTk
 import threading
+import shutil
 
 # ─────────────────────────────────────────────────────────────
 # PATHS — all folders are auto-created on first run
@@ -50,7 +50,6 @@ def _create_recognizer():
         radius=1, neighbors=8, grid_x=8, grid_y=8, threshold=100.0
     )
 
-
 def load_model():
     """
     Load the trained LBPH model and label map from disk.
@@ -63,7 +62,6 @@ def load_model():
     with open(LABELS_FILE, "rb") as f:
         id_to_name = pickle.load(f)
     return recognizer, id_to_name
-
 
 def train_model():
     """
@@ -78,16 +76,24 @@ def train_model():
         if not os.path.isdir(person_dir):
             continue
 
-        id_to_name[current_id] = person_name
+        has_images = False
         for img_file in os.listdir(person_dir):
             img_path = os.path.join(person_dir, img_file)
-            pil_img  = Image.open(img_path).convert("L")   # grayscale
-            img_arr  = np.array(pil_img, dtype=np.uint8)
-            faces.append(img_arr)
-            labels.append(current_id)
-        current_id += 1
+            try:
+                pil_img  = Image.open(img_path).convert("L")   # grayscale
+                img_arr  = np.array(pil_img, dtype=np.uint8)
+                faces.append(img_arr)
+                labels.append(current_id)
+                has_images = True
+            except:
+                continue
+        if has_images:
+            id_to_name[current_id] = person_name
+            current_id += 1
 
     if not faces:
+        if os.path.exists(MODEL_FILE): os.remove(MODEL_FILE)
+        if os.path.exists(LABELS_FILE): os.remove(LABELS_FILE)
         return None, {}
 
     recognizer = _create_recognizer()
@@ -102,27 +108,37 @@ def train_model():
 # ATTENDANCE HELPERS
 # ─────────────────────────────────────────────────────────────
 
-def mark_attendance(name: str) -> bool:
+def mark_attendance(name: str):
     """
     Append a row to attendance.xlsx.
-    Returns True if the record is new, False if already marked today.
+    Returns True if the record is new, False if already marked today,
+    and "PermissionError" if the excel file is open somewhere else.
     """
     today    = datetime.now().strftime("%Y-%m-%d")
     now_time = datetime.now().strftime("%H:%M:%S")
 
-    if os.path.exists(ATTENDANCE_FILE):
-        df = pd.read_excel(ATTENDANCE_FILE, engine="openpyxl")
-    else:
-        df = pd.DataFrame(columns=["Name", "Date", "Time"])
+    try:
+        if os.path.exists(ATTENDANCE_FILE):
+            df = pd.read_excel(ATTENDANCE_FILE, engine="openpyxl")
+        else:
+            df = pd.DataFrame(columns=["Name", "Date", "Time", "Status"])
 
-    # Duplicate guard — same name + same date
-    if ((df["Name"] == name) & (df["Date"] == today)).any():
+        if "Status" not in df.columns:
+            df["Status"] = "Present"
+
+        # Duplicate guard — same name + same date
+        if ((df["Name"] == name) & (df["Date"] == today)).any():
+            return False
+
+        new_row = pd.DataFrame([{"Name": name, "Date": today, "Time": now_time, "Status": "Present"}])
+        df = pd.concat([df, new_row], ignore_index=True)
+        df.to_excel(ATTENDANCE_FILE, index=False, engine="openpyxl")
+        return True
+    except PermissionError:
+        return "PermissionError"
+    except Exception as e:
+        print(f"Error marking attendance: {e}")
         return False
-
-    new_row = pd.DataFrame([{"Name": name, "Date": today, "Time": now_time}])
-    df = pd.concat([df, new_row], ignore_index=True)
-    df.to_excel(ATTENDANCE_FILE, index=False, engine="openpyxl")
-    return True
 
 # ─────────────────────────────────────────────────────────────
 # MAIN APPLICATION
@@ -138,8 +154,9 @@ class AttendanceApp(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("Face Recognition Attendance System")
-        self.geometry("1100x680")
-        self.resizable(False, False)
+        self.geometry("1100x720")
+        self.attributes('-fullscreen', True)
+        self.bind("<Escape>", self._exit_fullscreen)
         self.configure(bg="#0f0f1a")
 
         # Runtime state
@@ -160,72 +177,81 @@ class AttendanceApp(tk.Tk):
     # ── UI ───────────────────────────────────
     def _build_ui(self):
         # Left panel
-        left = tk.Frame(self, bg="#16162a", width=280)
+        left = tk.Frame(self, bg="#16162a", width=380)
         left.pack(side="left", fill="y")
         left.pack_propagate(False)
 
-        tk.Label(left, text="🎓", font=("Segoe UI", 38),
-                 bg="#16162a", fg="#a78bfa").pack(pady=(28, 4))
-        tk.Label(left, text="Attendance\nSystem",
-                 font=("Segoe UI", 15, "bold"),
+        container = tk.Frame(left, bg="#16162a")
+        container.place(relx=0.5, rely=0.5, anchor="center")
+
+        tk.Label(container, text="🎓", font=("Segoe UI", 48),
+                 bg="#16162a", fg="#a78bfa").pack(pady=(10, 5))
+        tk.Label(container, text="Attendance System",
+                 font=("Segoe UI", 22, "bold"),
                  bg="#16162a", fg="#e2e8f0", justify="center").pack()
-        tk.Label(left, text="OpenCV  •  LBPH  •  Excel",
-                 font=("Segoe UI", 8), bg="#16162a", fg="#6366f1").pack(pady=(2, 18))
+        tk.Label(container, text="OpenCV  •  LBPH  •  Excel",
+                 font=("Segoe UI", 11), bg="#16162a", fg="#6366f1").pack(pady=(2, 20))
 
-        ttk.Separator(left).pack(fill="x", padx=18, pady=4)
+        ttk.Separator(container).pack(fill="x", padx=10, pady=15)
 
-        B = dict(font=("Segoe UI", 11, "bold"), bd=0, relief="flat",
-                 activeforeground="white", cursor="hand2", width=22, pady=9)
+        B = dict(font=("Segoe UI", 14, "bold"), bd=0, relief="flat",
+                 activeforeground="white", cursor="hand2", width=22, pady=10)
 
-        tk.Button(left, text="➕  Register New User",
+        tk.Button(container, text="➕  Register New User",
                   bg="#6366f1", fg="white", activebackground="#4f46e5",
-                  command=self._start_register, **B).pack(pady=7, padx=18)
+                  command=self._start_register, **B).pack(pady=6)
 
-        tk.Button(left, text="✅  Take Attendance",
+        tk.Button(container, text="✅  Take Attendance",
                   bg="#10b981", fg="white", activebackground="#059669",
-                  command=self._start_attendance, **B).pack(pady=7, padx=18)
+                  command=self._start_attendance, **B).pack(pady=6)
 
-        tk.Button(left, text="📋  View Attendance",
+        tk.Button(container, text="❌  Mark Absentees",
                   bg="#f59e0b", fg="white", activebackground="#d97706",
-                  command=self._view_attendance, **B).pack(pady=7, padx=18)
+                  command=self._mark_absentees, **B).pack(pady=6)
 
-        tk.Button(left, text="🔄  Re-train Model",
+        tk.Button(container, text="📋  View Attendance",
                   bg="#3b82f6", fg="white", activebackground="#2563eb",
-                  command=self._retrain, **B).pack(pady=7, padx=18)
+                  command=self._view_attendance, **B).pack(pady=6)
 
-        tk.Button(left, text="⏹  Stop Camera",
+        tk.Button(container, text="🗑  Delete User",
+                  bg="#c026d3", fg="white", activebackground="#a21caf",
+                  command=self._delete_user, **B).pack(pady=6)
+
+        tk.Button(container, text="⏹  Stop Camera",
                   bg="#64748b", fg="white", activebackground="#475569",
-                  command=self._stop_camera, **B).pack(pady=7, padx=18)
+                  command=self._stop_camera, **B).pack(pady=6)
 
-        tk.Button(left, text="🚪  Exit",
+        tk.Button(container, text="🚪  Exit",
                   bg="#ef4444", fg="white", activebackground="#dc2626",
-                  command=self._on_close, **B).pack(pady=7, padx=18)
+                  command=self._on_close, **B).pack(pady=6)
 
-        ttk.Separator(left).pack(fill="x", padx=18, pady=8)
+        ttk.Separator(container).pack(fill="x", padx=10, pady=15)
 
         self.status_var = tk.StringVar(value="Ready ✔")
-        tk.Label(left, textvariable=self.status_var,
-                 font=("Segoe UI", 9), bg="#16162a", fg="#94a3b8",
-                 wraplength=240, justify="center").pack(pady=4, padx=10)
+        tk.Label(container, textvariable=self.status_var,
+                 font=("Segoe UI", 11), bg="#16162a", fg="#94a3b8",
+                 wraplength=300, justify="center").pack(pady=4)
 
         self.users_var = tk.StringVar(value=self._users_label())
-        tk.Label(left, textvariable=self.users_var,
-                 font=("Segoe UI", 9, "italic"),
+        tk.Label(container, textvariable=self.users_var,
+                 font=("Segoe UI", 11, "italic"),
                  bg="#16162a", fg="#6366f1").pack(pady=2)
 
         # Right panel — camera canvas
         right = tk.Frame(self, bg="#0f0f1a")
         right.pack(side="right", fill="both", expand=True)
 
-        self.canvas = tk.Canvas(right, bg="#0a0a14", width=800, height=580,
+        self.canvas = tk.Canvas(right, bg="#0a0a14",
                                 highlightthickness=2,
                                 highlightbackground="#6366f1")
-        self.canvas.pack(padx=10, pady=10)
+        self.canvas.pack(padx=20, pady=20, fill="both", expand=True)
 
         self.info_var = tk.StringVar(value="Press a button to begin")
         tk.Label(right, textvariable=self.info_var,
-                 font=("Segoe UI", 11), bg="#0f0f1a", fg="#a78bfa").pack()
+                 font=("Segoe UI", 14), bg="#0f0f1a", fg="#a78bfa").pack(pady=(0, 20))
 
+        # Layout once before drawing placeholder so dimensions update
+        self.update_idletasks()
         self._draw_placeholder()
 
     def _users_label(self):
@@ -233,10 +259,14 @@ class AttendanceApp(tk.Tk):
 
     def _draw_placeholder(self):
         self.canvas.delete("all")
+        cw = self.canvas.winfo_width()
+        ch = self.canvas.winfo_height()
+        if cw < 10: cw = 800
+        if ch < 10: ch = 580
         self.canvas.create_text(
-            400, 290,
-            text="📷\n\nCamera feed will appear here",
-            font=("Segoe UI", 16), fill="#334155",
+            cw // 2, ch // 2,
+            text="📷\n\nCamera feed will appear here\n(Press ESC to exit Fullscreen)",
+            font=("Segoe UI", 20), fill="#334155",
             justify="center", tags="placeholder")
 
     # ── CAMERA THREAD ────────────────────────
@@ -257,7 +287,11 @@ class AttendanceApp(tk.Tk):
             if not ret:
                 break
 
-            display = cv2.resize(frame, (800, 580))
+            cw = self.canvas.winfo_width()
+            ch = self.canvas.winfo_height()
+            if cw < 10: cw = 800
+            if ch < 10: ch = 580
+            display = cv2.resize(frame, (cw, ch))
 
             if self.mode == "attendance":
                 display = self._attendance_frame(frame, display)
@@ -282,6 +316,7 @@ class AttendanceApp(tk.Tk):
                 "Please register at least one user first.")
             return
         self.mode = "attendance"
+        self.error_shown = False
         self.status_var.set("📸 Taking attendance…")
         self.info_var.set("Look at the camera — attendance is being recorded")
         self._start_camera()
@@ -310,9 +345,15 @@ class AttendanceApp(tk.Tk):
                 # Mark attendance (thread-safe via after())
                 if name not in self.marked_today:
                     added = mark_attendance(name)
-                    if added:
+                    if added is True:
                         self.marked_today.add(name)
                         self.after(0, lambda n=name: self._show_marked(n))
+                    elif added == "PermissionError":
+                        if getattr(self, "error_shown", False) is False:
+                            self.error_shown = True
+                            self.after(0, lambda: messagebox.showerror(
+                                "File Open", 
+                                "attendance.xlsx is open in another program.\nPlease close it so attendance can be marked!"))
             else:
                 name      = "Unknown"
                 color     = (60, 60, 230)       # blue — unknown
@@ -413,21 +454,100 @@ class AttendanceApp(tk.Tk):
             f"✅  '{self.reg_name.replace('_',' ')}' registered successfully!\n"
             f"Total known users: {len(self.id_to_name)}")
 
-    # ── RETRAIN ───────────────────────────────
-    def _retrain(self):
-        self.status_var.set("🔄 Re-training LBPH model…")
-        self.update()
-        self.recognizer, self.id_to_name = train_model()
-        self.users_var.set(self._users_label())
-        self.status_var.set("Ready ✔")
-        if self.id_to_name:
-            messagebox.showinfo("Done",
-                                f"✅ Model re-trained.\n"
-                                f"Total users: {len(self.id_to_name)}")
-        else:
-            messagebox.showwarning("Empty Dataset",
-                                   "No images found in dataset/.\n"
-                                   "Please register users first.")
+    # ── DELETE USER ───────────────────────────
+    def _delete_user(self):
+        if not self.id_to_name:
+            messagebox.showinfo("No Users", "No registered users to delete.")
+            return
+
+        win = tk.Toplevel(self)
+        win.title("Delete User")
+        win.geometry("320x180")
+        win.configure(bg="#0f0f1a")
+        win.grab_set()
+
+        tk.Label(win, text="Select user to delete:", font=("Segoe UI", 11), bg="#0f0f1a", fg="white").pack(pady=(15, 5))
+        
+        users = sorted(list(set(self.id_to_name.values())))
+        combo = ttk.Combobox(win, values=users, state="readonly", font=("Segoe UI", 10))
+        combo.pack(pady=5)
+        if users:
+            combo.current(0)
+            
+        def do_delete():
+            user = combo.get()
+            if not user: return
+            
+            if messagebox.askyesno("Confirm", f"Are you sure you want to delete '{user}'?\n\nThis will remove their images, encodings, and all attendance records.", parent=win):
+                # 1. Delete dataset folder
+                user_dir = os.path.join(DATASET_DIR, user)
+                if os.path.exists(user_dir):
+                    shutil.rmtree(user_dir, ignore_errors=True)
+                
+                # 2. Delete from attendance records
+                try:
+                    if os.path.exists(ATTENDANCE_FILE):
+                        df = pd.read_excel(ATTENDANCE_FILE, engine="openpyxl")
+                        if "Name" in df.columns:
+                            df = df[df["Name"] != user]
+                            df.to_excel(ATTENDANCE_FILE, index=False, engine="openpyxl")
+                except PermissionError:
+                    messagebox.showwarning("Warning", "attendance.xlsx is open. Could not remove records.", parent=win)
+                
+                # 3. Retrain model
+                self.status_var.set("🔄 Updating model...")
+                self.update()
+                self.recognizer, self.id_to_name = train_model()
+                self.users_var.set(self._users_label())
+                self.status_var.set("Ready ✔")
+                
+                messagebox.showinfo("Deleted", f"User '{user}' has been deleted.", parent=win)
+                win.destroy()
+                
+        tk.Button(win, text="Delete", font=("Segoe UI", 10, "bold"), bg="#ef4444", fg="white", activebackground="#dc2626", command=do_delete).pack(pady=15)
+
+
+    # ── MARK ABSENTEES ────────────────────────
+    def _mark_absentees(self):
+        if not self.id_to_name:
+            messagebox.showinfo("Info", "No users registered yet.")
+            return
+
+        today = datetime.now().strftime("%Y-%m-%d")
+        try:
+            if os.path.exists(ATTENDANCE_FILE):
+                df = pd.read_excel(ATTENDANCE_FILE, engine="openpyxl")
+            else:
+                df = pd.DataFrame(columns=["Name", "Date", "Time", "Status"])
+
+            if "Status" not in df.columns:
+                df["Status"] = "Present"
+
+            # Get names marked 'Present' today
+            today_records = df[df["Date"] == today]
+            present_users = today_records[today_records["Status"] == "Present"]["Name"].tolist()
+            
+            # List all known users
+            all_users = list(set(self.id_to_name.values()))
+            
+            new_rows = []
+            for user in all_users:
+                if user not in present_users:
+                    # Check if already marked absent
+                    if not ((df["Name"] == user) & (df["Date"] == today) & (df["Status"] == "Absent")).any():
+                        new_rows.append({"Name": user, "Date": today, "Time": "--:--:--", "Status": "Absent"})
+            
+            if new_rows:
+                df = pd.concat([df, pd.DataFrame(new_rows)], ignore_index=True)
+                df.to_excel(ATTENDANCE_FILE, index=False, engine="openpyxl")
+                messagebox.showinfo("Success", f"✅ Marked {len(new_rows)} users as Absent for today.")
+            else:
+                messagebox.showinfo("Info", "All registered users are either Present or already marked Absent for today.")
+                
+        except PermissionError:
+            messagebox.showerror("File Open", "attendance.xlsx is open in another program.\nPlease close it first!")
+        except Exception as e:
+            messagebox.showerror("Error", f"Could not mark absentees:\n{e}")
 
     # ── VIEW ATTENDANCE ───────────────────────
     def _view_attendance(self):
@@ -461,22 +581,33 @@ class AttendanceApp(tk.Tk):
                         font=("Segoe UI", 10, "bold"))
         style.map("A.Treeview", background=[("selected", "#4f46e5")])
 
-        cols = ("Name", "Date", "Time")
+        cols = ("Name", "Date", "Time", "Status")
         tree = ttk.Treeview(frame, columns=cols, show="headings",
                             style="A.Treeview")
         for col in cols:
             tree.heading(col, text=col)
-            tree.column(col, width=200, anchor="center")
+            tree.column(col, width=150, anchor="center")
 
         sb = ttk.Scrollbar(frame, orient="vertical", command=tree.yview)
         tree.configure(yscroll=sb.set)
         tree.pack(side="left", fill="both", expand=True)
         sb.pack(side="right", fill="y")
 
-        df = pd.read_excel(ATTENDANCE_FILE, engine="openpyxl")
-        for _, row in df.iterrows():
-            tree.insert("", "end",
-                        values=(row["Name"], row["Date"], row["Time"]))
+        try:
+            df = pd.read_excel(ATTENDANCE_FILE, engine="openpyxl")
+            if "Status" not in df.columns:
+                df["Status"] = "Present"
+            for _, row in df.iterrows():
+                tree.insert("", "end",
+                            values=(row["Name"], row["Date"], row["Time"], row.get("Status", "Present")))
+        except PermissionError:
+            messagebox.showerror("Error", "attendance.xlsx is open in another program. Cannot read records.", parent=win)
+            win.destroy()
+            return
+        except Exception as e:
+            messagebox.showerror("Error", f"Error reading file:\n{e}", parent=win)
+            win.destroy()
+            return
 
         tk.Label(win, text=f"Total records: {len(df)}",
                  font=("Segoe UI", 9), bg="#0f0f1a", fg="#94a3b8").pack(pady=5)
@@ -495,6 +626,10 @@ class AttendanceApp(tk.Tk):
             self.cap = None
         self.status_var.set("Camera stopped. Ready ✔")
         self._draw_placeholder()
+
+    def _exit_fullscreen(self, event=None):
+        self.attributes('-fullscreen', False)
+        self.geometry("1100x720")
 
     def _on_close(self):
         self._stop_camera()
